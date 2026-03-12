@@ -92,7 +92,7 @@ class Go2BridgeRobot(LeggedRobot):
 
         self.bridge_center_y = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
         self.bridge_top_z = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
-        self.robot_actor_indices = (2 * torch.arange(self.num_envs, dtype=torch.int32, device=self.device) + 1)
+        robot_actor_indices = []
 
         num_per_row = max(1, int(np.sqrt(self.num_envs)))
         for i in range(self.num_envs):
@@ -124,6 +124,7 @@ class Go2BridgeRobot(LeggedRobot):
 
             self.bridge_center_y[i] = bridge_world[1]
             self.bridge_top_z[i] = bridge_world[2] + bridge_height * 0.5
+            robot_actor_indices.append(self.gym.get_actor_index(env_handle, actor_handle, gymapi.DOMAIN_SIM))
 
             self.envs.append(env_handle)
             self.bridge_handles.append(bridge_handle)
@@ -133,6 +134,9 @@ class Go2BridgeRobot(LeggedRobot):
                 print('bridge actor created')
                 print('bridge pose', [float(bridge_world[0]), float(bridge_world[1]), float(bridge_world[2])])
                 print('robot spawn pose', [float(spawn_world[0]), float(spawn_world[1]), float(spawn_world[2])])
+
+
+        self.robot_actor_indices = torch.tensor(robot_actor_indices, dtype=torch.long, device=self.device)
 
         self.feet_indices = torch.zeros(len(feet_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i in range(len(feet_names)):
@@ -212,36 +216,21 @@ class Go2BridgeRobot(LeggedRobot):
             return
 
         env_ids_long = env_ids.to(dtype=torch.long)
-        reset_states = self.root_states.clone()
         new_states = self.base_init_state.repeat(len(env_ids_long), 1)
         new_states[:, :3] += self.env_origins[env_ids_long]
         if self.custom_origins:
             new_states[:, :2] += torch_rand_float(-1.0, 1.0, (len(env_ids_long), 2), device=self.device)
 
         new_states[:, 7:13] = torch_rand_float(-0.5, 0.5, (len(env_ids_long), 6), device=self.device)
-        reset_states.index_copy_(0, env_ids_long, new_states)
-        self.root_states[:] = reset_states
+        self.root_states.index_copy_(0, env_ids_long, new_states)
 
-        actor_ids_int32 = self.robot_actor_indices[env_ids_long].to(dtype=torch.int32).contiguous()
-        self.gym.set_actor_root_state_tensor_indexed(
-            self.sim,
-            gymtorch.unwrap_tensor(self.all_root_states),
-            gymtorch.unwrap_tensor(actor_ids_int32),
-            len(actor_ids_int32),
-        )
+        self.gym.set_actor_root_state_tensor(self.sim, gymtorch.unwrap_tensor(self.all_root_states))
 
     def _push_robots(self):
         """Random pushes only on robot actors."""
         max_vel = self.cfg.domain_rand.max_push_vel_xy
         self.root_states[:, 7:9] = torch_rand_float(-max_vel, max_vel, (self.num_envs, 2), device=self.device)
-
-        actor_ids_int32 = self.robot_actor_indices.to(dtype=torch.int32).contiguous()
-        self.gym.set_actor_root_state_tensor_indexed(
-            self.sim,
-            gymtorch.unwrap_tensor(self.all_root_states),
-            gymtorch.unwrap_tensor(actor_ids_int32),
-            len(actor_ids_int32),
-        )
+        self.gym.set_actor_root_state_tensor(self.sim, gymtorch.unwrap_tensor(self.all_root_states))
 
     def _post_physics_step_callback(self):
         super()._post_physics_step_callback()
