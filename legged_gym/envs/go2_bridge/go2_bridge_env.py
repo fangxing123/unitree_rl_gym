@@ -3,8 +3,7 @@ import os
 import numpy as np
 import torch
 from isaacgym import gymapi, gymtorch
-from isaacgym.torch_utils import get_axis_params, torch_rand_float, quat_rotate_inverse
-from isaacgym.torch_utils import to_torch
+from isaacgym.torch_utils import get_axis_params, quat_rotate_inverse, to_torch, torch_rand_float
 
 from legged_gym import LEGGED_GYM_ROOT_DIR
 from legged_gym.envs.base.legged_robot import LeggedRobot
@@ -15,11 +14,11 @@ class Go2BridgeRobot(LeggedRobot):
     """GO2 bridge task environment with a static narrow bridge actor."""
 
     def _get_env_origins(self):
-        """Override to avoid torch.meshgrid indexing warning in newer torch."""
+        """Override to avoid meshgrid indexing warning and keep grid behavior."""
         self.custom_origins = False
         self.env_origins = torch.zeros(self.num_envs, 3, device=self.device, requires_grad=False)
-        num_cols = np.floor(np.sqrt(self.num_envs))
-        num_rows = np.ceil(self.num_envs / num_cols)
+        num_cols = max(1, int(np.floor(np.sqrt(self.num_envs))))
+        num_rows = int(np.ceil(self.num_envs / num_cols))
         xx, yy = torch.meshgrid(torch.arange(num_rows), torch.arange(num_cols), indexing='ij')
         spacing = self.cfg.env.env_spacing
         self.env_origins[:, 0] = spacing * xx.flatten()[:self.num_envs]
@@ -27,7 +26,6 @@ class Go2BridgeRobot(LeggedRobot):
         self.env_origins[:, 2] = 0.0
 
     def _create_envs(self):
-        """Creates robot envs and an explicit static bridge actor per env."""
         asset_path = self.cfg.asset.file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
         asset_root = os.path.dirname(asset_path)
         asset_file = os.path.basename(asset_path)
@@ -58,6 +56,7 @@ class Go2BridgeRobot(LeggedRobot):
         bridge_asset = self.gym.create_box(self.sim, bridge_length, bridge_width, bridge_height, bridge_options)
 
         self.bridge_half_width = bridge_width * 0.5
+        self.num_actors_per_env = 2
 
         self.num_dof = self.gym.get_asset_dof_count(robot_asset)
         self.num_bodies = self.gym.get_asset_rigid_body_count(robot_asset)
@@ -93,9 +92,9 @@ class Go2BridgeRobot(LeggedRobot):
 
         self.bridge_center_y = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
         self.bridge_top_z = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
-        self.robot_actor_indices = torch.zeros(self.num_envs, dtype=torch.long, device=self.device, requires_grad=False)
+        self.robot_actor_indices = torch.zeros(self.num_envs, dtype=torch.int32, device=self.device, requires_grad=False)
 
-        num_per_row = int(self.num_envs ** 0.5)
+        num_per_row = max(1, int(np.sqrt(self.num_envs)))
         for i in range(self.num_envs):
             env_handle = self.gym.create_env(self.sim, env_lower, env_upper, num_per_row)
 
@@ -158,7 +157,8 @@ class Go2BridgeRobot(LeggedRobot):
         self.gym.refresh_net_contact_force_tensor(self.sim)
 
         self.all_root_states = gymtorch.wrap_tensor(actor_root_state)
-        self.root_states = self.all_root_states[self.robot_actor_indices]
+        all_root_states_view = self.all_root_states.view(self.num_envs, self.num_actors_per_env, 13)
+        self.root_states = all_root_states_view[:, 1, :]
         self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
         self.dof_pos = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 0]
         self.dof_vel = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 1]
@@ -181,9 +181,7 @@ class Go2BridgeRobot(LeggedRobot):
         self.last_root_vel = torch.zeros_like(self.root_states[:, 7:13])
         self.commands = torch.zeros(self.num_envs, self.cfg.commands.num_commands, dtype=torch.float, device=self.device, requires_grad=False)
         self.commands_scale = torch.tensor(
-            [self.obs_scales.lin_vel, self.obs_scales.lin_vel, self.obs_scales.ang_vel],
-            device=self.device,
-            requires_grad=False,
+            [self.obs_scales.lin_vel, self.obs_scales.lin_vel, self.obs_scales.ang_vel], device=self.device, requires_grad=False
         )
         self.feet_air_time = torch.zeros(self.num_envs, self.feet_indices.shape[0], dtype=torch.float, device=self.device, requires_grad=False)
         self.last_contacts = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.bool, device=self.device, requires_grad=False)
@@ -221,7 +219,7 @@ class Go2BridgeRobot(LeggedRobot):
 
         self.root_states[env_ids, 7:13] = torch_rand_float(-0.5, 0.5, (len(env_ids), 6), device=self.device)
 
-        actor_ids_int32 = self.robot_actor_indices[env_ids].to(dtype=torch.int32)
+        actor_ids_int32 = self.robot_actor_indices[env_ids].contiguous()
         self.gym.set_actor_root_state_tensor_indexed(
             self.sim,
             gymtorch.unwrap_tensor(self.all_root_states),
@@ -233,7 +231,7 @@ class Go2BridgeRobot(LeggedRobot):
         """Random pushes only on robot actors."""
         max_vel = self.cfg.domain_rand.max_push_vel_xy
         self.root_states[:, 7:9] = torch_rand_float(-max_vel, max_vel, (self.num_envs, 2), device=self.device)
-        actor_ids_int32 = self.robot_actor_indices.to(dtype=torch.int32)
+        actor_ids_int32 = self.robot_actor_indices.contiguous()
         self.gym.set_actor_root_state_tensor_indexed(
             self.sim,
             gymtorch.unwrap_tensor(self.all_root_states),
