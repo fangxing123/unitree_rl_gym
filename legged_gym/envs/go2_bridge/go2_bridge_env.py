@@ -209,15 +209,18 @@ class Go2BridgeRobot(LeggedRobot):
 
     def _reset_root_states(self, env_ids):
         """Reset only robot actor root states (bridge actors are fixed)."""
-        if self.custom_origins:
-            self.root_states[env_ids] = self.base_init_state
-            self.root_states[env_ids, :3] += self.env_origins[env_ids]
-            self.root_states[env_ids, :2] += torch_rand_float(-1.0, 1.0, (len(env_ids), 2), device=self.device)
-        else:
-            self.root_states[env_ids] = self.base_init_state
-            self.root_states[env_ids, :3] += self.env_origins[env_ids]
+        if len(env_ids) == 0:
+            return
 
-        self.root_states[env_ids, 7:13] = torch_rand_float(-0.5, 0.5, (len(env_ids), 6), device=self.device)
+        root_states = self.base_init_state.repeat(len(env_ids), 1)
+        root_states[:, :3] += self.env_origins[env_ids]
+        if self.custom_origins:
+            root_states[:, :2] += torch_rand_float(-1.0, 1.0, (len(env_ids), 2), device=self.device)
+
+        root_states[:, 7:13] = torch_rand_float(-0.5, 0.5, (len(env_ids), 6), device=self.device)
+
+        actor_ids_long = self.robot_actor_indices[env_ids].to(dtype=torch.long)
+        self.all_root_states.index_copy_(0, actor_ids_long, root_states)
 
         actor_ids_int32 = self.robot_actor_indices[env_ids].contiguous()
         self.gym.set_actor_root_state_tensor_indexed(
@@ -230,7 +233,10 @@ class Go2BridgeRobot(LeggedRobot):
     def _push_robots(self):
         """Random pushes only on robot actors."""
         max_vel = self.cfg.domain_rand.max_push_vel_xy
-        self.root_states[:, 7:9] = torch_rand_float(-max_vel, max_vel, (self.num_envs, 2), device=self.device)
+        robot_states = self.all_root_states[self.robot_actor_indices.to(dtype=torch.long)]
+        robot_states[:, 7:9] = torch_rand_float(-max_vel, max_vel, (self.num_envs, 2), device=self.device)
+        self.all_root_states.index_copy_(0, self.robot_actor_indices.to(dtype=torch.long), robot_states)
+
         actor_ids_int32 = self.robot_actor_indices.contiguous()
         self.gym.set_actor_root_state_tensor_indexed(
             self.sim,
