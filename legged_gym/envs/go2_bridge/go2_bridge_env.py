@@ -216,21 +216,39 @@ class Go2BridgeRobot(LeggedRobot):
             return
 
         env_ids_long = env_ids.to(dtype=torch.long)
-        new_states = self.base_init_state.repeat(len(env_ids_long), 1)
+        actor_ids_long = self.robot_actor_indices[env_ids_long]
+
+        new_states = self.base_init_state.unsqueeze(0).repeat(len(env_ids_long), 1)
         new_states[:, :3] += self.env_origins[env_ids_long]
         if self.custom_origins:
             new_states[:, :2] += torch_rand_float(-1.0, 1.0, (len(env_ids_long), 2), device=self.device)
-
         new_states[:, 7:13] = torch_rand_float(-0.5, 0.5, (len(env_ids_long), 6), device=self.device)
-        self.root_states.index_copy_(0, env_ids_long, new_states)
 
-        self.gym.set_actor_root_state_tensor(self.sim, gymtorch.unwrap_tensor(self.all_root_states))
+        self.all_root_states.index_copy_(0, actor_ids_long, new_states)
+
+        actor_ids_int32 = actor_ids_long.to(dtype=torch.int32).contiguous()
+        self.gym.set_actor_root_state_tensor_indexed(
+            self.sim,
+            gymtorch.unwrap_tensor(self.all_root_states),
+            gymtorch.unwrap_tensor(actor_ids_int32),
+            len(actor_ids_int32),
+        )
 
     def _push_robots(self):
         """Random pushes only on robot actors."""
         max_vel = self.cfg.domain_rand.max_push_vel_xy
-        self.root_states[:, 7:9] = torch_rand_float(-max_vel, max_vel, (self.num_envs, 2), device=self.device)
-        self.gym.set_actor_root_state_tensor(self.sim, gymtorch.unwrap_tensor(self.all_root_states))
+        actor_ids_long = self.robot_actor_indices
+        robot_states = self.all_root_states[actor_ids_long].clone()
+        robot_states[:, 7:9] = torch_rand_float(-max_vel, max_vel, (self.num_envs, 2), device=self.device)
+        self.all_root_states.index_copy_(0, actor_ids_long, robot_states)
+
+        actor_ids_int32 = actor_ids_long.to(dtype=torch.int32).contiguous()
+        self.gym.set_actor_root_state_tensor_indexed(
+            self.sim,
+            gymtorch.unwrap_tensor(self.all_root_states),
+            gymtorch.unwrap_tensor(actor_ids_int32),
+            len(actor_ids_int32),
+        )
 
     def _post_physics_step_callback(self):
         super()._post_physics_step_callback()
