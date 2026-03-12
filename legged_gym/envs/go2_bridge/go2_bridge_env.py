@@ -92,7 +92,6 @@ class Go2BridgeRobot(LeggedRobot):
 
         self.bridge_center_y = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
         self.bridge_top_z = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
-        robot_actor_indices = []
 
         num_per_row = max(1, int(np.sqrt(self.num_envs)))
         for i in range(self.num_envs):
@@ -124,7 +123,6 @@ class Go2BridgeRobot(LeggedRobot):
 
             self.bridge_center_y[i] = bridge_world[1]
             self.bridge_top_z[i] = bridge_world[2] + bridge_height * 0.5
-            robot_actor_indices.append(self.gym.get_actor_index(env_handle, actor_handle, gymapi.DOMAIN_SIM))
 
             self.envs.append(env_handle)
             self.bridge_handles.append(bridge_handle)
@@ -135,8 +133,6 @@ class Go2BridgeRobot(LeggedRobot):
                 print('bridge pose', [float(bridge_world[0]), float(bridge_world[1]), float(bridge_world[2])])
                 print('robot spawn pose', [float(spawn_world[0]), float(spawn_world[1]), float(spawn_world[2])])
 
-
-        self.robot_actor_indices = torch.tensor(robot_actor_indices, dtype=torch.long, device=self.device)
 
         self.feet_indices = torch.zeros(len(feet_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i in range(len(feet_names)):
@@ -211,12 +207,12 @@ class Go2BridgeRobot(LeggedRobot):
         self.default_dof_pos = self.default_dof_pos.unsqueeze(0)
 
     def _reset_root_states(self, env_ids):
-        """Reset only robot actor root states (bridge actors are fixed)."""
+        """Reset robot root states (robot is actor slot 1 in each env)."""
         if len(env_ids) == 0:
             return
 
         env_ids_long = env_ids.to(dtype=torch.long)
-        actor_ids_long = self.robot_actor_indices[env_ids_long]
+        all_root_states_view = self.all_root_states.view(self.num_envs, self.num_actors_per_env, 13)
 
         new_states = self.base_init_state.unsqueeze(0).repeat(len(env_ids_long), 1)
         new_states[:, :3] += self.env_origins[env_ids_long]
@@ -224,31 +220,15 @@ class Go2BridgeRobot(LeggedRobot):
             new_states[:, :2] += torch_rand_float(-1.0, 1.0, (len(env_ids_long), 2), device=self.device)
         new_states[:, 7:13] = torch_rand_float(-0.5, 0.5, (len(env_ids_long), 6), device=self.device)
 
-        self.all_root_states.index_copy_(0, actor_ids_long, new_states)
-
-        actor_ids_int32 = actor_ids_long.to(dtype=torch.int32).contiguous()
-        self.gym.set_actor_root_state_tensor_indexed(
-            self.sim,
-            gymtorch.unwrap_tensor(self.all_root_states),
-            gymtorch.unwrap_tensor(actor_ids_int32),
-            len(actor_ids_int32),
-        )
+        all_root_states_view[env_ids_long, 1, :] = new_states
+        self.gym.set_actor_root_state_tensor(self.sim, gymtorch.unwrap_tensor(self.all_root_states))
 
     def _push_robots(self):
         """Random pushes only on robot actors."""
         max_vel = self.cfg.domain_rand.max_push_vel_xy
-        actor_ids_long = self.robot_actor_indices
-        robot_states = self.all_root_states[actor_ids_long].clone()
-        robot_states[:, 7:9] = torch_rand_float(-max_vel, max_vel, (self.num_envs, 2), device=self.device)
-        self.all_root_states.index_copy_(0, actor_ids_long, robot_states)
-
-        actor_ids_int32 = actor_ids_long.to(dtype=torch.int32).contiguous()
-        self.gym.set_actor_root_state_tensor_indexed(
-            self.sim,
-            gymtorch.unwrap_tensor(self.all_root_states),
-            gymtorch.unwrap_tensor(actor_ids_int32),
-            len(actor_ids_int32),
-        )
+        all_root_states_view = self.all_root_states.view(self.num_envs, self.num_actors_per_env, 13)
+        all_root_states_view[:, 1, 7:9] = torch_rand_float(-max_vel, max_vel, (self.num_envs, 2), device=self.device)
+        self.gym.set_actor_root_state_tensor(self.sim, gymtorch.unwrap_tensor(self.all_root_states))
 
     def _post_physics_step_callback(self):
         super()._post_physics_step_callback()
