@@ -211,16 +211,14 @@ class Go2BridgeRobot(LeggedRobot):
         if len(env_ids) == 0:
             return
 
-        env_ids_long = env_ids.to(dtype=torch.long)
-        all_root_states_view = self.all_root_states.view(self.num_envs, self.num_actors_per_env, 13)
+        env_ids_list = env_ids.detach().cpu().tolist()
+        for env_id in env_ids_list:
+            self.root_states[env_id] = self.base_init_state
+            self.root_states[env_id, :3] += self.env_origins[env_id]
+            if self.custom_origins:
+                self.root_states[env_id, :2] += torch_rand_float(-1.0, 1.0, (1, 2), device=self.device).squeeze(0)
+            self.root_states[env_id, 7:13] = torch_rand_float(-0.5, 0.5, (1, 6), device=self.device).squeeze(0)
 
-        new_states = self.base_init_state.unsqueeze(0).repeat(len(env_ids_long), 1)
-        new_states[:, :3] += self.env_origins[env_ids_long]
-        if self.custom_origins:
-            new_states[:, :2] += torch_rand_float(-1.0, 1.0, (len(env_ids_long), 2), device=self.device)
-        new_states[:, 7:13] = torch_rand_float(-0.5, 0.5, (len(env_ids_long), 6), device=self.device)
-
-        all_root_states_view[env_ids_long, 1, :] = new_states
         self.gym.set_actor_root_state_tensor(self.sim, gymtorch.unwrap_tensor(self.all_root_states))
 
     def _push_robots(self):
