@@ -2,6 +2,21 @@ from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobot
 
 
 class Go2BridgeCfg(LeggedRobotCfg):
+    class env(LeggedRobotCfg.env):
+        num_envs = 1
+        episode_length_s = 120
+
+    class viewer(LeggedRobotCfg.viewer):
+        ref_env = 0
+        pos = [4.5, -1.2, 1.8]
+        lookat = [1.6, 0.0, 0.25]
+
+    class debug:
+        enable = True
+        print_interval_s = 0.5
+        fall_height_threshold = 0.12
+        bridge_side_margin = 0.05
+
     class init_state(LeggedRobotCfg.init_state):
         pos = [0.0, 0.0, 0.42]  # x,y,z [m]
         default_joint_angles = {  # = target angles [rad] when action = 0.0
